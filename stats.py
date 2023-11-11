@@ -1,3 +1,4 @@
+
 """
 appstat = Stats()
 
@@ -8,64 +9,125 @@ appstat.CountResults
 
 """
 
-
-from . import metrics # metrics import Count, Times, Performance
 import json
 from typing import Any
+from functools import wraps
+from filelock import FileLock
+
+from . import metrics  # metric_names import Count, Times, Performance
 
 
-TYPE_ANNOTATION = 'ptbappstats_type'
+def read_json_file(path: str):
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            return json.loads(f.read(), cls=StatsDecoder)
+    except FileNotFoundError:
+        raise
 
 
 class Stats:
-    def __init__(self, file: str):
-        self.file = file
-        self.Performance = metrics.Performance(self)
-        self.Times = metrics.Times(self)
-        self.Count = metrics.Count(self)
-        self.CountResults = metrics.CountResults(self)
+    AVAILABLE_METRICS = {m.__name__: m for m in metrics.Metric.__subclasses__()}
+
+    def __init__(self):
+        self.metric_names = []
 
     @property
     def registry(self):
-        return {
-            'Performance': self.Performance.registry,
-            'Times': self.Times.registry,
-            'Count': self.Count.registry,
-            'CountResults': self.CountResults.registry
-        }
+        return {name: self.__getattribute__(name).registry for name in self.metric_names}
+
+    def __getattr__(self, item):
+        try:
+            return self.__getattribute__(item)
+        except AttributeError:
+            if item in self.AVAILABLE_METRICS:
+                setattr(self, item, self.AVAILABLE_METRICS[item]())
+                metric = self.__getattribute__(item)
+                self.metric_names.append(item)
+                return metric
+            else:
+                raise
 
     def serialize(self):
         registry = {k: dict(metric) for k, metric in self.registry.items()}
-        for name, metric_registry in registry.items():
-            metric_registry.update({TYPE_ANNOTATION: getattr(self, name).__class__.__name__})
         return json.dumps(registry, cls=StatsEncoder)
 
-    def dump(self):
-        with open(self.file, 'w', encoding='utf-8') as f:
-            f.write(self.serialize())
+    def dump(self, path, update: bool = True, purge: bool = True):
+        with FileLock(path + '.lock'):
+            if update:
+                try:
+                    self.update_from_historical(path)
+                except FileNotFoundError:
+                    pass
+            with open(path, 'w', encoding='utf-8') as f:
+                f.write(self.serialize())
+            if purge:
+                self.purge()
 
-    def load(self):
-        try:
-            with open(self.file, 'r', encoding='utf-8') as f:
-                j = json.loads(f.read(), cls=StatsDecoder)
-        except FileNotFoundError:
-            raise
+    def _load_dumped(self, path: str):
+        j = read_json_file(path)
 
         for metric_name, metric_data in j.items():
-            if TYPE_ANNOTATION in metric_data:
-                cls = getattr(metrics, metric_data[TYPE_ANNOTATION])
-                del metric_data[TYPE_ANNOTATION]
-                metric = cls.load(self, metric_data)
-                # setattr(self, metric_name, metric)
-
+            if metric_name in self.AVAILABLE_METRICS:
+                metric_cls = self.AVAILABLE_METRICS[metric_name]
+                metric = metric_cls.load(metric_data)
+                setattr(self, metric_name, metric)
+                self.metric_names.append(metric_name)
             else:
                 pass
+
+    def update_from_historical(self, path: str):
+        loaded_stats = Stats()
+        loaded_stats._load_dumped(path)
+        for metric_name in self.metric_names:  # update owned metrics only
+            self_metric = getattr(self, metric_name)
+            try:
+                loaded_metric_data = loaded_stats.__getattribute__(metric_name)
+                self_metric.update_from_historical(loaded_metric_data)
+            except AttributeError:
+                pass
+
+    def send(self, url, method='POST'):
+        from requests import Request, Session
+        r = Request(method, url, data=self.registry)
+        r = r.prepare()
+        s = Session()
+        resp = s.send(r)
+        return resp
+
+    def purge(self):
+        for metric_name in self.metric_names:
+            metric = getattr(self, metric_name)
+            metric.purge()
+
+    @classmethod
+    def read(cls, path):
+        ros = ReadOnlyStats()
+        ros._load_dumped(path)
+        return ros
+
+    def Dump(self, path, update=True, purge=True):
+        def decorator(fn):
+            @wraps(fn)
+            def wrapper(*args, **kwargs):
+                try:
+                    result = fn(*args, **kwargs)
+                except:
+                    result = None
+                finally:
+                    self.dump(path, update=update, purge=purge)
+                return result
+            return wrapper
+        return decorator
 
     def __getitem__(self, item):
         return self.registry[item]
 
     def __repr__(self):
-        return f'Stats: {self.registry}'
+        return f'{self.__class__.__name__}: {self.registry}'
+
+
+class ReadOnlyStats(Stats):
+    pass
 
 
 class StatsEncoder(json.JSONEncoder):
@@ -76,7 +138,6 @@ class StatsEncoder(json.JSONEncoder):
     def default(self, obj: Any):
         if isinstance(obj, metrics.Metric):
             idiomatic = obj.registry.cast()
-            idiomatic[TYPE_ANNOTATION] = obj.__class__.__name__
             return idiomatic
         super().default(obj)
 

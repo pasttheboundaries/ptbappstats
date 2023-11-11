@@ -5,6 +5,19 @@ from collections import defaultdict, namedtuple
 from functools import wraps
 from typing import Protocol, Any
 from pandas import Period
+from typing import TypeVar
+
+
+def validate_other_same_class(self, other):
+    if not isinstance(other, self.__class__):
+        raise TypeError(f'Could not update_from_historical {self.__class__} with: {other.__class__}')
+
+
+def pull_self(args):
+    try:
+        return args[0].__class__.__name__
+    except (IndexError, AttributeError):
+        return ''
 
 
 def fn_name__template(fn):
@@ -12,6 +25,33 @@ def fn_name__template(fn):
         return '.'.join((fn.__module__, '{}', fn.__name__))
     else:
         return '.'.join((fn.__module__, fn.__name__))
+
+
+MetricType = TypeVar('MetricType')
+
+
+class UpdatableFromHistorical:
+    pass
+
+
+class UpdatableFromHistoricalDictOfDicts(UpdatableFromHistorical):
+    def update_from_historical(self, historical):
+        validate_other_same_class(self, historical)
+        for k, v in historical.items():
+            if self.get(k, None) is None:
+                self[k] = v
+            else:
+                if isinstance(self[k], UpdatableFromHistorical):
+                    self[k].update_from_historical(v)
+                else:
+                    pass
+
+
+class UpdatableFromHistoricalDictOfValues(UpdatableFromHistorical):
+    def update_from_historical(self, historical):
+        validate_other_same_class(self, historical)
+        for k, v in historical.items():
+            self[k] += v
 
 
 class Registry(Protocol):
@@ -27,20 +67,26 @@ class Registry(Protocol):
     def update(self, m) -> None:
         ...
 
+    def update_from_historical(self):
+        ...
+
+    def purge(self):
+        ...
+
 
 class Metric:
-
     """
     Base class
 
     """
-    def __init__(self, stats):
-        self._registry: Registry
-        self.stats = stats
+    def __init__(self) -> None:
+        """must instantiate self._registry"""
+        ...
+        self._registry = None
 
     @property
     def registry(self):
-        return getattr(self.stats, self.__class__.__name__)._registry
+        return self._registry
 
     def decorator(self, fn):
         @wraps(fn)
@@ -52,9 +98,17 @@ class Metric:
     def serialize(self):
         ...
 
+    def purge(self):
+        self.registry.purge()
+
     @classmethod
-    def load(cls, stats, d):
+    def load(cls, d) -> MetricType:
         ...
+
+    def update_from_historical(self, historical: MetricType) -> MetricType:
+        validate_other_same_class(self, historical)
+        self._registry.update_from_historical(historical._registry)
+        return self
 
     def __call__(self, fn):
         if not callable(fn):
@@ -65,16 +119,14 @@ class Metric:
         return f'{self.__class__.__name__}: {self.registry}'
 
 
-def pull_self(args):
-    try:
-        return args[0].__class__.__name__
-    except (IndexError, AttributeError):
-        return ''
-
-
-class CallCounts(defaultdict):
+class CountRegistry(defaultdict, UpdatableFromHistoricalDictOfValues):
     def cast(self):
         return dict(self)
+
+    def purge(self):
+        keys = tuple(self.keys())
+        for k in keys:
+            del self[k]
 
     def __repr__(self):
         return f'{self.__class__.__name__} :{self.cast()}'
@@ -84,9 +136,9 @@ class Count(Metric):
     """
     Counts calls
     """
-    def __init__(self, stats):
-        super().__init__(stats)
-        self._registry = CallCounts(lambda: 0)
+    def __init__(self) -> None:
+        super().__init__()
+        self._registry = CountRegistry(lambda: 0)
 
     def decorator(self, fn):
         template = fn_name__template(fn)
@@ -103,10 +155,9 @@ class Count(Metric):
         return self.registry.cast()
 
     @classmethod
-    def load(cls, stats, d):
-        metric = cls(stats)
-        setattr(stats, cls.__name__, metric)
-        metric.registry.update(d)
+    def load(cls, d) -> MetricType:
+        metric = cls()
+        metric._registry.update(d)
         return metric
 
 
@@ -118,28 +169,36 @@ resolver_functions = {
 }
 
 
-class CallTimes(dict):  # fn: TimeTables
+class TimesRegistry(dict, UpdatableFromHistoricalDictOfDicts):  # fn: TimeTables
     def __setitem__(self, key, value) -> None:
         if not isinstance(key, str):
             raise TypeError(f'Illegal key type {type(key)}')
         if not isinstance(value, TimeTables):
-            raise TypeError(f'CallTimes value must be TimeTables')
+            raise TypeError(f'TimesRegistry value must be TimeTables')
         super().__setitem__(key, value)
 
     def __repr__(self):
-        return f'CallTimes: {self.cast()}'
+        return f'TimesRegistry: {self.cast()}'
+
+    def purge(self):
+        for k, v in self.items():
+            v.purge()
 
     def cast(self):
         return {k: d.cast() for k, d in self.items()}
 
 
-class TimeTables(dict):
+class TimeTables(dict, UpdatableFromHistoricalDictOfDicts):
     def __setitem__(self, key, value) -> None:
         if not isinstance(key, str) or key not in Times.ALLOWED:
             raise ValueError(f'Illegal key {key}')
-        if not isinstance(value, TimesTable):
-            raise TypeError(f'CallTimes value must be dict')
+        if not isinstance(value, TimeTable):
+            raise TypeError(f'TimesRegistry value must be dict')
         super().__setitem__(key, value)
+
+    def purge(self):
+        for k, v in self.items():
+            v.purge()
 
     def cast(self):
         return {k: d.cast() for k, d in self.items()}
@@ -148,7 +207,7 @@ class TimeTables(dict):
         return f'TaimeTables: {self.cast()}'
 
 
-class TimesTable(defaultdict):  # 22: 234
+class TimeTable(defaultdict, UpdatableFromHistoricalDictOfValues):  # 22: 234
 
     def __setitem__(self, key, value):
         if isinstance(key, str) and key.isdigit():
@@ -158,11 +217,16 @@ class TimesTable(defaultdict):  # 22: 234
         else:
             raise ValueError(f'Invalid key {key}.')
         if not isinstance(value, int):
-            raise TypeError(f'TimesTable value must be int.')
+            raise TypeError(f'TimeTable value must be int.')
         super().__setitem__(key, value)
 
+    def purge(self):
+        keys = tuple(self.keys())
+        for k in keys:
+            del self[k]
+
     def __repr__(self):
-        return f'TimesTable: {self.cast()}'
+        return f'TimeTable: {self.cast()}'
 
     def cast(self):
         return dict(self)
@@ -170,15 +234,15 @@ class TimesTable(defaultdict):  # 22: 234
 
 class Times(Metric):
     """
-    Count call times with predefined resolution
+    Counts call times with predefined resolution
 
     """
     DEFAULT_RESOLUTION = 'h'
     ALLOWED = 'mdwh'
 
-    def __init__(self, stats):
-        super().__init__(stats)
-        self._registry = CallTimes()
+    def __init__(self) -> None:
+        super().__init__()
+        self._registry = TimesRegistry()
         self.time_tables = None
 
     def __call__(self, resolution=DEFAULT_RESOLUTION):
@@ -190,7 +254,7 @@ class Times(Metric):
 
         def decorator(fn):
             template = fn_name__template(fn)
-            times_table_initial = TimesTable(lambda: 0)
+            times_table_initial = TimeTable(lambda: 0)
 
             @wraps(fn)
             def wrapper(*args, **kwargs):
@@ -211,37 +275,50 @@ class Times(Metric):
         return self.registry.cast()
 
     @classmethod
-    def load(cls, stats, d):
-        metric = cls(stats)
-        setattr(stats, cls.__name__, metric)
+    def load(cls, d) -> MetricType:
+        metric = cls()
         for fn, time_tables in d.items():
-            reg_fn_time_tables = metric.registry[fn] = TimeTables()
+            metric.registry[fn] = TimeTables()
             for resolution, timetable in time_tables.items():
-                reg_fn_time_tables[resolution] = TimesTable(lambda: 0)
+                metric.registry[fn][resolution] = TimeTable(lambda: 0)
                 for t, n in timetable.items():
-                    reg_fn_time_tables[resolution][t] += n
+                    metric.registry[fn][resolution][t] += n
         return metric
 
 
-class PerformanceData(namedtuple('PerformanceData', field_names=('n', 'total', 'mean'))):
-    pass
+class PerformanceData(namedtuple('PerformanceData', field_names=('n', 'total', 'mean')), UpdatableFromHistorical):
+    def update_from_historical(self, historical):
+        validate_other_same_class(self, historical)
+        n: int = self.n + historical.n
+        total: int = self.total + historical.total
+        mean: float = total / n
+        return PerformanceData(n, total, mean)
 
 
-class PerformaceTable(defaultdict):
+class PerformaceRegistry(defaultdict, UpdatableFromHistorical):
     def __repr__(self):
         return f'PerformanceTable: {self.cast()}'
 
+    def purge(self):
+        for k in self.keys():
+            self[k] = PerformanceData(0, 0, 0)
+
     def cast(self):
         return {k: tuple(v) for k, v in self.items()}
+
+    def update_from_historical(self, historical):
+        validate_other_same_class(self, historical)
+        for k, v in historical.items():
+            self[k] = self.get(k, PerformanceData(0, 0, 0)).update_from_historical(v)
 
 
 class Performance(Metric):
     """
     counts performance metric
     """
-    def __init__(self, stats):
-        super().__init__(stats)
-        self._registry = PerformaceTable(lambda: PerformanceData(0, 0, 0))
+    def __init__(self,):
+        super().__init__()
+        self._registry = PerformaceRegistry(lambda: PerformanceData(0, 0, 0))
 
     def decorator(self, fn):
         template = fn_name__template(fn)
@@ -264,46 +341,50 @@ class Performance(Metric):
         return self.registry.cast()
 
     @classmethod
-    def load(cls, stats, d):
-        metric = cls(stats)
-        setattr(stats, cls.__name__, metric)
+    def load(cls, d):
+        metric = cls()
         for fn, perfs in d.items():
-            # old = metric.registry[fn]
             loaded_n, loaded_total, loaded_mean = perfs
-            # n = old.n + loaded_n
-            # total = old.total + loaded_total
-            # mean = old.mean + loaded_mean
             metric.registry[fn] = PerformanceData(loaded_n, loaded_total, loaded_mean)
         return metric
 
 
-class ResultCounts(dict):
+class CountResultsRegistry(dict, UpdatableFromHistoricalDictOfDicts):
     def __setitem__(self, key, value) -> None:
         if not isinstance(key, str):
             raise TypeError(f'Illegal key type {type(key)}')
-        if not isinstance(value, CountTable):
-            raise TypeError(f'ResultCounts value must be CountTable')
+        if not isinstance(value, CountResultTable):
+            raise TypeError(f'CountResultsRegistry value must be CountResultTable')
         super().__setitem__(key, value)
 
+    def purge(self):
+        for k, v in self.items():
+            v.purge()
+
     def __repr__(self):
-        return f'ResultCounts: {self.cast()}'
+        return f'CountResultsRegistry: {self.cast()}'
 
     def cast(self):
         return {k: d.cast() for k, d in self.items()}
 
 
-class CountTable(defaultdict):  # 22: 234
+class CountResultTable(defaultdict, UpdatableFromHistoricalDictOfValues):
 
     def __setitem__(self, key, value):
         if not isinstance(value, int):
-            raise TypeError(f'TimesTable value must be int.')
+            raise TypeError(f'TimeTable value must be int.')
         super().__setitem__(key, value)
 
     def __repr__(self):
-        return f'CountTable: {self.cast()}'
+        return f'CountResultTable: {self.cast()}'
 
     def cast(self):
         return dict(self)
+
+    def purge(self):
+        keys = tuple(self.keys())
+        for k in keys:
+           del self[k]
 
 
 class CountResults(Metric):
@@ -312,9 +393,9 @@ class CountResults(Metric):
 
     """
 
-    def __init__(self, stats):
-        super().__init__(stats)
-        self._registry = ResultCounts()
+    def __init__(self):
+        super().__init__()
+        self._registry = CountResultsRegistry()
         self.result_tables = None
 
     def __call__(self, result, serialisation=str):
@@ -341,7 +422,7 @@ class CountResults(Metric):
                 try:
                     count_table = self.registry[fn_name]
                 except KeyError:
-                    count_table = self.registry[fn_name] = CountTable(lambda: 0)
+                    count_table = self.registry[fn_name] = CountResultTable(lambda: 0)
 
                 count_table[serialized] += 1
                 return result
@@ -353,11 +434,10 @@ class CountResults(Metric):
         return self.registry.cast()
 
     @classmethod
-    def load(cls, stats, d):
-        metric = cls(stats)
-        setattr(stats, cls.__name__, metric)
+    def load(cls, d):
+        metric = cls()
         for fn, count_table in d.items():
-            reg_fn_count_tables = metric.registry[fn] = CountTable(lambda: 0)
+            reg_fn_count_tables = metric.registry[fn] = CountResultTable(lambda: 0)
             for serialised, n in count_table.items():
                 reg_fn_count_tables[serialised] += n
 
