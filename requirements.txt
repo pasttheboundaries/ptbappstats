@@ -1,3 +1,6 @@
 pandas
 requests
 filelock
+matplotlib
+psutil
+numpy

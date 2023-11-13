@@ -14,7 +14,13 @@ from typing import Any
 from functools import wraps
 from filelock import FileLock
 
-from . import metrics  # metric_names import Count, Times, Performance
+
+from .metrics import sys_metrics, time_metrics, count_metrics
+from .metrics.base_metrics import Metric
+
+AVAILABLE_METRICS = {m.__name__: m for m in count_metrics.AVALIABLE}
+AVAILABLE_METRICS.update({m.__name__: m for m in sys_metrics.AVALIABLE})
+AVAILABLE_METRICS.update({m.__name__: m for m in time_metrics.AVALIABLE})
 
 
 def read_json_file(path: str):
@@ -26,7 +32,6 @@ def read_json_file(path: str):
 
 
 class Stats:
-    AVAILABLE_METRICS = {m.__name__: m for m in metrics.Metric.__subclasses__()}
 
     def __init__(self):
         self.metric_names = []
@@ -39,8 +44,8 @@ class Stats:
         try:
             return self.__getattribute__(item)
         except AttributeError:
-            if item in self.AVAILABLE_METRICS:
-                setattr(self, item, self.AVAILABLE_METRICS[item]())
+            if item in AVAILABLE_METRICS:
+                setattr(self, item, AVAILABLE_METRICS[item]())
                 metric = self.__getattribute__(item)
                 self.metric_names.append(item)
                 return metric
@@ -67,8 +72,8 @@ class Stats:
         j = read_json_file(path)
 
         for metric_name, metric_data in j.items():
-            if metric_name in self.AVAILABLE_METRICS:
-                metric_cls = self.AVAILABLE_METRICS[metric_name]
+            if metric_name in AVAILABLE_METRICS:
+                metric_cls = AVAILABLE_METRICS[metric_name]
                 metric = metric_cls.load(metric_data)
                 setattr(self, metric_name, metric)
                 self.metric_names.append(metric_name)
@@ -136,7 +141,7 @@ class StatsEncoder(json.JSONEncoder):
         super().__init__(*args, **kawrgs)
 
     def default(self, obj: Any):
-        if isinstance(obj, metrics.Metric):
+        if isinstance(obj, Metric):
             idiomatic = obj.registry.cast()
             return idiomatic
         super().default(obj)
