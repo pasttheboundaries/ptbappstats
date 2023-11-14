@@ -1,6 +1,6 @@
 #PTB app stats
 
-to be used with application functions
+Application stats to be used with application functions.
 
 Use:
 ```
@@ -37,16 +37,28 @@ Metric decorators should be applied to functions or methods, to keep the functio
 
 
 ###Stats.Hourly()  
-Records the time of function call with 24 hourly granularity
+Records the history of function call times with 24 hourly granularity
 
 ###Stats.Daily()  
-Records the time of function call with daily granularity
+Records the history of function call times with daily granularity
 
-###Stats.Weekdaily()  
-Records the time of function call with week-days granularity
+###Stats.Weekly()  
+Records the history of function call times with week granularity
 
 ###Stats.Monthly()  
-Records the time of function call with monthly granularity
+Records the history of function call times with monthly granularity
+
+###Stats.Hours()  
+Aggregates the times of function calls with 24 hourly granularity
+
+###Stats.Days()  
+Aggregates the times of function calls with daily granularity
+
+###Stats.Weekdays()  
+Aggregates the times of function calls with week-days granularity
+
+###Stats.Months()  
+Aggregates the times of function calls with monthly granularity
 
 ###Stats.Count  
 Counts function calls
@@ -61,7 +73,7 @@ Counts function calls if the returned value == result
 ###Stats.Performance
 will record function performance times
 
-###Stats.CPUUse
+###Stats.CpuUse
 will record cpu percent use for monitored functions
 Can plot the results
 
@@ -135,7 +147,7 @@ Use only stats.dump() as frequently as you need during the app runtime.</span>
 
 #Limitations:
 
-1) Stats instances use decoration taime to apply metrics.
+1) Stats instances use decoration time to apply metrics.
 This will be projected to the dump file.
 If the code changes and one of the stat decorations is removed this will also cause disappearing the sstat from the dump file.
 <span style="color:lightblue">Be sure to save a copy of the dump file before changing the code (before removing stats decorations).</span>
@@ -143,8 +155,8 @@ If the code changes and one of the stat decorations is removed this will also ca
 Which makes those metrics time costly for the monitoring functions 
 that either need to be fast or need to be called frequently.
 But at the same time they might be very usefull for monitoring user activity.
-3) CPUUse is sampled every 0.1 sec.
-For functions faster than this resolution metric might collect useless values. 
-Also this metric measures only the kernel process that is spawned by the function, 
+3) CpuUse and MemoryUse metrics are sampled every 0.1 sec.
+For functions faster than this resolution, metric might collect useless values. 
+Also this metric measures only the kernel process that performs the function calculations, 
 but not the children porcesses.
 

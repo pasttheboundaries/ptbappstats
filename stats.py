@@ -20,7 +20,7 @@ from .metrics.base_metrics import Metric
 
 AVAILABLE_METRICS = {m.__name__: m for m in count_metrics.AVALIABLE}
 AVAILABLE_METRICS.update({m.__name__: m for m in sys_metrics.AVALIABLE})
-AVAILABLE_METRICS.update({m.__name__: m for m in time_metrics.AVALIABLE})
+AVAILABLE_METRICS.update({m.__name__: m for m in time_metrics.AVAILABLE})
 
 
 def read_json_file(path: str):

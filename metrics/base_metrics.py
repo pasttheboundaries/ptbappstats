@@ -4,6 +4,7 @@ from collections import defaultdict
 from functools import wraps
 from typing import Protocol, Any
 from typing import TypeVar
+from itertools import dropwhile
 
 
 def validate_other_same_class(self, other):
@@ -18,7 +19,7 @@ def pull_self(args):
         return ''
 
 
-def fn_name__template(fn):
+def fn_name_template(fn):
     if 'self' in inspect.signature(fn).parameters:
         return '.'.join((fn.__module__, '{}', fn.__name__))
     else:
@@ -27,6 +28,10 @@ def fn_name__template(fn):
 
 def zero():
     return 0
+
+
+def fn_name_abbr(fn_name: str):
+    return '.'.join(dropwhile(lambda x: x.startswith('_'), fn_name.split('.')))
 
 
 MetricType = TypeVar('MetricType')
@@ -67,11 +72,7 @@ class Metric:
         return self._registry
 
     def decorator(self, fn):
-        @wraps(fn)
-        def wrapper(*args, **kwargs):
-            return fn(*args, **kwargs)
-
-        return wrapper
+        ...
 
     def serialize(self):
         ...
@@ -158,7 +159,7 @@ class SingleNestValueMetric(Metric):
         self._registry = self.__class__.PRIMARY_REGISTRY(self.__class__.PRIMARY_REGISTRY_DEFAULT)
 
     def decorator(self, fn):
-        template = fn_name__template(fn)
+        template = fn_name_template(fn)
 
         @wraps(fn)
         def wrapper(*args, **kwargs):
@@ -186,7 +187,6 @@ class DoubleNestValueMetric(Metric):
 
     """
     PRIMARY_REGISTRY = DictOfNumericsRegistry
-    PRIMARY_REGITRY_DEFAULT = lambda: dict()
     SECONDARY_REGISTRY = DictOfNumericsRegistry
     SECONDARY_REGITRY_DEFAULT = zero
 
@@ -194,41 +194,12 @@ class DoubleNestValueMetric(Metric):
         super().__init__()
         self._registry = self.PRIMARY_REGISTRY()
 
-    def __call__(self, result, serialisation=str):
-        try:
-            serialisation(result)
-        except TypeError:
-            raise ValueError(f'Unable to serialise declared result. Declare a valid serialization method.')
-        return self.decorated_namespace(result, serialisation)
-
-    def decorated_namespace(self, expected_result, serialisation):
+    def __call__(self, *args, **kwargs):
         """
-        TODO this is not generic !!!
+        This overrides Metric.__call__
+        as this might vary in subclasses
         """
-
-        serialized = serialisation(expected_result)
-
-        def decorator(fn):
-            template = fn_name__template(fn)
-
-            @wraps(fn)
-            def wrapper(*args, **kwargs):
-                result = fn(*args, **kwargs)
-                if result != expected_result:
-                    return result
-
-                fn_name = template.format(pull_self(args))
-
-                try:
-                    count_table = self.registry[fn_name]
-                except KeyError:
-                    count_table = self.registry[fn_name] = self.__class__.SECONDARY_REGISTRY(self.__class__.SECONDARY_REGITRY_DEFAULT)
-
-                count_table[serialized] += 1
-                return result
-
-            return wrapper
-        return decorator
+        ...
 
     def serialize(self):
         return self.registry.cast()
@@ -236,80 +207,9 @@ class DoubleNestValueMetric(Metric):
     @classmethod
     def load(cls, d):
         metric = cls()
-        for fn, count_table in d.items():
-            reg_fn_count_tables = metric.registry[fn] = cls.SECONDARY_REGISTRY(cls.SECONDARY_REGITRY_DEFAULT)
-            for serialised, n in count_table.items():
-                reg_fn_count_tables[serialised] += n
+        for fn_name, loaded_secondary_registry in d.items():
+            self_secondary_registry = metric.registry[fn_name] = cls.SECONDARY_REGISTRY(cls.SECONDARY_REGITRY_DEFAULT)
+            for key, n in loaded_secondary_registry.items():
+                self_secondary_registry[key] += n
 
         return metric
-
-
-# def dummy_tertiary_dict_key(secondary_dict_key):
-#     return secondary_dict_key
-
-#
-# class TripleNestValueMetric(Metric):
-#     """
-#     Base class
-#     Secondary dict key is to be set during decoration time.
-#     This will decide about the tertiary dict key resolution method.
-#     Tertiary_dict_key is derived from secondary dict key.
-#     secondary_dict_key will be passed to TERTIARY_DICT_KEY_PROXY callable to obtain the tertiary_dict_key.
-#
-#     This organises the metric so:
-#      - the registry primary dict holds method relevant secondary dicts
-#      - the registry secondary dict holds the metric type relevant dicts
-#      - the registry tertiary dict holds the metric values relevant to the circumstances defined by the secondary
-#
-#     """
-#     PRIMARY_REGISTRY = DictOfDictRegistry
-#     SECONDARY_REGISTRY = DictOfDictRegistry
-#     TERTIARY_DICT_KEY_PROXY = dummy_tertiary_dict_key
-#     TERTIARY_REGISTRY = DictOfNumericsRegistry
-#     TERTIARY_REGISTRY_DEFAULT = zero
-#     DEFAULT_SECONDARY_DICT_KEY = None
-#
-#     def __init__(self) -> None:
-#         super().__init__()
-#         self._registry = self.__class__.PRIMARY_REGISTRY()
-#         self.time_tables = None
-#
-#     def __call__(self, resolution=DEFAULT_SECONDARY_DICT_KEY):
-#         return self.decorated_namespace(resolution)
-#
-#     def decorated_namespace(self, secondary_dict_k):
-#
-#         def decorator(fn):
-#             template = fn_name__template(fn)
-#             times_table_initial = self.__class__.TERTIARY_REGISTRY(self.__class__.TERTIARY_REGISTRY_DEFAULT)
-#
-#             @wraps(fn)
-#             def wrapper(*args, **kwargs):
-#                 tertiary_dict_key = self.__class__.TERTIARY_DICT_KEY_PROXY(secondary_dict_k)
-#                 fn_name = template.format(pull_self(args))
-#                 try:
-#                     times_table = self.registry[fn_name][secondary_dict_k]
-#                 except KeyError:
-#                     self.registry[fn_name] = self.__class__.SECONDARY_REGISTRY()
-#                     times_table = self.registry[fn_name][secondary_dict_k] = times_table_initial
-#
-#                 times_table[tertiary_dict_key] += 1
-#                 return fn(*args, **kwargs)
-#
-#             return wrapper
-#         return decorator
-#
-#     def serialize(self):
-#         return self.registry.cast()
-#
-#     @classmethod
-#     def load(cls, d) -> MetricType:
-#         metric = cls()
-#         for fn, time_tables in d.items():
-#             metric.registry[fn] = cls.SECONDARY_REGISTRY()
-#             for resolution, timetable in time_tables.items():
-#                 metric.registry[fn][resolution] = cls.TERTIARY_REGISTRY(lambda: 0)
-#                 for t, n in timetable.items():
-#                     metric.registry[fn][resolution][t] += n
-#                     metric.registry[fn][resolution][t] += n
-#         return metric
