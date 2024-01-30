@@ -78,20 +78,22 @@ class CpuUse(SingleNestValueMetric):
             fn_name = template.format(pull_self(args))
             # setup
             pid = psutil.Process().pid
-            flag = multiprocessing.Event()
-            flag.clear()
-            q = multiprocessing.Queue()
-            # calculate
-            p = multiprocessing.Process(target=cpu_measurment, args=(q, pid, flag))
-            p.start()
-            result = fn(*args, **kwargs)
-            flag.set()
-            p.join()
-            m = []
-            while not q.empty():
-                m.append(q.get())
-            self.registry[fn_name] = self.registry[fn_name].update_from_historical(CPUMeanUseData(1, tuple(m)))
-            return result
+            with multiprocessing.Manager() as manager:
+                flag = manager.Event()
+                flag.clear()
+                q = manager.Queue()
+                # calculate
+                p = multiprocessing.Process(target=cpu_measurment, args=(q, pid, flag))
+                p.start()
+                result = fn(*args, **kwargs)
+                flag.set()
+
+                p.join()
+                m = []
+                while not q.empty():
+                    m.append(q.get())
+                self.registry[fn_name] = self.registry[fn_name].update_from_historical(CPUMeanUseData(1, tuple(m)))
+                return result
         return wrapper
 
     def serialize(self):
@@ -168,21 +170,22 @@ class MemoryUse(SingleNestValueMetric):
             fn_name = template.format(pull_self(args))
             # setup
             pid = psutil.Process().pid
-            flag = multiprocessing.Event()
-            flag.clear()
-            q = multiprocessing.Queue()
-            # calculate
-            p = multiprocessing.Process(target=memory_measurment, args=(q, pid, flag))
-            p.start()
-            result = fn(*args, **kwargs)
-            flag.set()
-            p.join()
-            m = []
-            while not q.empty():
-                m.append(q.get())
-            m = calculate_change(m)
-            self.registry[fn_name] = self.registry[fn_name].update_from_historical(MemoryUseMean(1, m))
-            return result
+            with multiprocessing.Manager() as manager:
+                flag = manager.Event()
+                flag.clear()
+                q = manager.Queue()
+                # calculate
+                p = multiprocessing.Process(target=memory_measurment, args=(q, pid, flag))
+                p.start()
+                result = fn(*args, **kwargs)
+                flag.set()
+                p.join()
+                m = []
+                while not q.empty():
+                    m.append(q.get())
+                m = calculate_change(m)
+                self.registry[fn_name] = self.registry[fn_name].update_from_historical(MemoryUseMean(1, m))
+                return result
         return wrapper
 
     def serialize(self):

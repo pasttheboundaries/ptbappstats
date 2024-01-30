@@ -90,6 +90,7 @@ class Stats:
                 self_metric.update_from_historical(loaded_metric_data)
             except AttributeError:
                 pass
+        return self
 
     def send(self, url, method='POST'):
         from requests import Request, Session
@@ -103,6 +104,7 @@ class Stats:
         for metric_name in self.metric_names:
             metric = getattr(self, metric_name)
             metric.purge()
+        return self
 
     @classmethod
     def read(cls, path):
